@@ -5,14 +5,17 @@ from sqlmodel import Field, SQLModel, Relationship
 
 class PlatformBase(SQLModel):
     name: str = Field(index=True)
+    platform_type: str = Field(default="Super-Pressure")  # e.g., "Super-Pressure Variable Volume", "Zero-Pressure"
     capex: float
     launch_cost: float
+    consumables_cost: float = Field(default=0.0)  # e.g., helium, ballast
     max_payload_mass: float # kg
     min_altitude: float # km
     max_altitude: float # km
     max_duration_days: int
     amortization_flights: int # e.g., 5 flights
-    power_available_payload: float # Watts
+    day_power: float  # Watts available during day
+    night_power: float  # Watts available during night (battery limited)
     battery_capacity: float # Watt-hours (Wh)
 
 class Platform(PlatformBase, table=True):
@@ -27,6 +30,7 @@ class PayloadBase(SQLModel):
     resolution_gsd: float # m
     fov: float # degrees
     daily_data_rate_gb: float # GB/day
+    market: str = Field(default="General")  # e.g., "Maritime", "Agriculture", "Urban"
 
 class Payload(PayloadBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

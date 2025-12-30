@@ -1,13 +1,17 @@
 export interface Platform {
     id: number;
     name: string;
+    platform_type: string;
     capex: number;
     launch_cost: number;
+    consumables_cost: number;
     max_payload_mass: number;
     min_altitude: number;
     max_altitude: number;
     max_duration_days: number;
-    power_available_payload: number;
+    amortization_flights: number;
+    day_power: number;
+    night_power: number;
     battery_capacity: number;
 }
 
@@ -20,6 +24,7 @@ export interface Payload {
     resolution_gsd: number;
     fov: number;
     daily_data_rate_gb: number;
+    market: string;
 }
 
 export interface SimulationRequest {
@@ -45,15 +50,23 @@ export interface SimulationResponse {
     is_feasible: boolean;
     warnings: string[];
     power_analysis: {
+        is_feasible: boolean;
         survives_night: boolean;
+        duty_cycle_percent: number;
+        day_hours: number;
+        night_hours: number;
         margin_wh: number;
         status: string;
     };
     flight_analysis: {
         wind_volatility_score: number;
+        mean_wind_speed_kmh: number;
+        acs_correction_speed_kmh: number;
         station_keeping_prob: number;
         overprovisioning_factor: number;
+        drift_warning: boolean;
         drift_risk: string;
+        fleet_size_recommended: number;
     };
     quote: {
         breakdown: QuoteBreakdown;

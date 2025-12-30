@@ -1,5 +1,5 @@
 import type { SimulationResponse } from '../types';
-import { AlertTriangle, CheckCircle, Wind, Battery } from 'lucide-react';
+import { AlertTriangle, CheckCircle, Wind, Battery, Users, Gauge } from 'lucide-react';
 
 interface QuoteCardProps {
     result: SimulationResponse | null;
@@ -31,25 +31,44 @@ export default function QuoteCard({ result }: QuoteCardProps) {
                 </div>
             </div>
 
-            {/* Physics Stats */}
+            {/* Physics Stats - Enhanced */}
             <div className="grid grid-cols-2 gap-3 text-xs">
+                {/* Power / Duty Cycle */}
                 <div className="bg-space-900 p-3 rounded border border-space-700">
                     <div className="flex items-center gap-2 mb-1 text-gray-400">
                         <Battery size={14} /> Power
                     </div>
-                    <div className={power_analysis.survives_night ? 'text-green-400' : 'text-red-400'}>
+                    <div className={power_analysis.is_feasible ? 'text-green-400' : 'text-red-400'}>
                         {power_analysis.status}
                     </div>
-                    <div className="text-gray-500">Margin: {power_analysis.margin_wh}Wh</div>
+                    <div className="flex items-center gap-1 mt-1 text-gray-500">
+                        <Gauge size={12} /> Duty Cycle: <span className={power_analysis.duty_cycle_percent < 100 ? 'text-yellow-400' : 'text-green-400'}>{power_analysis.duty_cycle_percent}%</span>
+                    </div>
                 </div>
+
+                {/* Wind / Drift */}
                 <div className="bg-space-900 p-3 rounded border border-space-700">
                     <div className="flex items-center gap-2 mb-1 text-gray-400">
                         <Wind size={14} /> Drift Risk
                     </div>
-                    <div className={flight_analysis.drift_risk === "High" ? 'text-red-400' : 'text-blue-400'}>
-                        {flight_analysis.drift_risk} Risk
+                    <div className={flight_analysis.drift_warning ? 'text-red-400' : flight_analysis.drift_risk === "High" ? 'text-orange-400' : 'text-blue-400'}>
+                        {flight_analysis.drift_warning ? '⚠ Drift Warning' : `${flight_analysis.drift_risk} Risk`}
                     </div>
-                    <div className="text-gray-500">Fleet Factor: {flight_analysis.overprovisioning_factor}x</div>
+                    <div className="text-gray-500 mt-1">
+                        Wind: {flight_analysis.mean_wind_speed_kmh} km/h | ACS: {flight_analysis.acs_correction_speed_kmh} km/h
+                    </div>
+                </div>
+
+                {/* Fleet Size */}
+                <div className="bg-space-900 p-3 rounded border border-space-700 col-span-2">
+                    <div className="flex items-center gap-2 mb-1 text-gray-400">
+                        <Users size={14} /> Fleet Overprovisioning
+                    </div>
+                    <div className="flex items-center gap-4">
+                        <span className="text-accent-400 text-lg font-bold">{flight_analysis.overprovisioning_factor}x</span>
+                        <span className="text-gray-400">→</span>
+                        <span className="text-white">{flight_analysis.fleet_size_recommended} platform{flight_analysis.fleet_size_recommended > 1 ? 's' : ''} recommended</span>
+                    </div>
                 </div>
             </div>
 
@@ -58,25 +77,25 @@ export default function QuoteCard({ result }: QuoteCardProps) {
                 <div className="mt-2 border-t border-space-700 pt-4">
                     <div className="text-gray-400 text-sm mb-1 uppercase tracking-wider">Total Mission Cost</div>
                     <div className="text-4xl font-mono font-bold text-white mb-4">
-                        ${quote.price_quoted.toLocaleString()}
+                        €{quote.price_quoted.toLocaleString()}
                     </div>
 
                     <div className="space-y-2 text-sm text-gray-300">
                         <div className="flex justify-between">
                             <span>Platform (Fleet x{quote.breakdown.overprovisioning_factor})</span>
-                            <span>${quote.breakdown.platform_amortized.toLocaleString()}</span>
+                            <span>€{quote.breakdown.platform_amortized.toLocaleString()}</span>
                         </div>
                         <div className="flex justify-between">
                             <span>Payload</span>
-                            <span>${quote.breakdown.payload_amortized.toLocaleString()}</span>
+                            <span>€{quote.breakdown.payload_amortized.toLocaleString()}</span>
                         </div>
                         <div className="flex justify-between">
                             <span>Operations & Data</span>
-                            <span>${(quote.breakdown.ops_cost + quote.breakdown.data_cost).toLocaleString()}</span>
+                            <span>€{(quote.breakdown.ops_cost + quote.breakdown.data_cost).toLocaleString()}</span>
                         </div>
                         <div className="flex justify-between pt-2 border-t border-space-700 font-bold text-accent-500">
                             <span>Net Margin ({quote.margin_percent}%)</span>
-                            <span>${quote.margin_absolute.toLocaleString()}</span>
+                            <span>€{quote.margin_absolute.toLocaleString()}</span>
                         </div>
                     </div>
                 </div>

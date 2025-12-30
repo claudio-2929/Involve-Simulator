@@ -4,7 +4,12 @@ import math
 class FlightModel:
     """
     Simulates wind patterns and station-keeping capability based on Loon library concepts.
+    Implements ACS (Altitude Control System) logic where balloons change altitude to find favorable winds.
     """
+
+    # Maximum horizontal correction speed achievable via ACS (km/h)
+    STANDARD_ACS_CORRECTION_SPEED = 15.0  # km/h (altitude maneuvers for wind seeking)
+    STRATOLLITE_ACS_CORRECTION_SPEED = 25.0  # km/h (enhanced with ballast control)
 
     @staticmethod
     def calculate_wind_volatility(lat: float, month: int) -> float:
@@ -38,21 +43,42 @@ class FlightModel:
         return min(0.9, volatility)
 
     @staticmethod
+    def estimate_mean_wind_speed(lat: float, month: int) -> float:
+        """
+        Estimates mean wind speed at stratospheric altitude (18-25km) in km/h.
+        Based on simplified climatology.
+        """
+        volatility = FlightModel.calculate_wind_volatility(lat, month)
+        # Map volatility to wind speed: 0.1 -> 10 km/h, 0.9 -> 50 km/h
+        return 10.0 + (volatility * 45.0)
+
+    @staticmethod
     def simulate_station_keeping(
         lat: float, 
         month: int,
         target_radius_km: float,
-        platform_maneuverability: float = 1.0 # 1.0 = Standard Loon ACS
+        platform_type: str = "Super-Pressure"
     ) -> dict:
         """
         Calculates the probability of maintaining position within target_radius_km.
-        Returns the Overprovisioning Factor (K).
+        Returns the Overprovisioning Factor (K) and Drift Warning.
         """
         volatility = FlightModel.calculate_wind_volatility(lat, month)
+        mean_wind_speed = FlightModel.estimate_mean_wind_speed(lat, month)
         
-        # Manueverability dampens volatility.
-        # Loon ACS allows altitude changes to find favorable winds.
-        effective_volatility = volatility / platform_maneuverability
+        # Select ACS correction speed based on platform type
+        if "Zero-Pressure" in platform_type or "Stratollite" in platform_type:
+            acs_correction_speed = FlightModel.STRATOLLITE_ACS_CORRECTION_SPEED
+        else:
+            acs_correction_speed = FlightModel.STANDARD_ACS_CORRECTION_SPEED
+        
+        # Drift warning: If mean wind exceeds ACS capability
+        drift_warning = mean_wind_speed > acs_correction_speed
+        drift_excess_ratio = max(0, (mean_wind_speed - acs_correction_speed) / acs_correction_speed)
+        
+        # Effective volatility adjusted by platform capability
+        maneuverability = acs_correction_speed / FlightModel.STANDARD_ACS_CORRECTION_SPEED
+        effective_volatility = volatility / maneuverability
         
         # Probability of staying in box (Simulated)
         # Tighter radius = harder to stay.
@@ -64,16 +90,26 @@ class FlightModel:
         success_prob = 1.0 - failure_prob
         
         # Overprovisioning Factor (K)
-        # If success is 50%, you need 2 balloons to ensure 1 is always there on average?
-        # Loon approach: "Fleet Replenishment Rate".
-        # Simplified: K = 1 + (failure_prob * 2) 
-        # e.g. 10% fail -> 1.2x fleet. 50% fail -> 2.0x fleet.
+        # K = 1 + (failure_prob * 1.5) + drift penalty
+        k_factor = 1.0 + (failure_prob * 1.5) + (drift_excess_ratio * 0.5)
         
-        k_factor = 1.0 + (failure_prob * 1.5)
+        # Determine risk level
+        if drift_warning:
+            drift_risk = "Critical"
+        elif failure_prob > 0.4:
+            drift_risk = "High"
+        elif failure_prob > 0.2:
+            drift_risk = "Moderate"
+        else:
+            drift_risk = "Low"
         
         return {
             "wind_volatility_score": round(volatility, 2),
+            "mean_wind_speed_kmh": round(mean_wind_speed, 1),
+            "acs_correction_speed_kmh": round(acs_correction_speed, 1),
             "station_keeping_prob": round(success_prob, 2),
             "overprovisioning_factor": round(k_factor, 2),
-            "drift_risk": "High" if failure_prob > 0.4 else "Moderate" if failure_prob > 0.2 else "Low"
+            "drift_warning": drift_warning,
+            "drift_risk": drift_risk,
+            "fleet_size_recommended": math.ceil(k_factor)
         }

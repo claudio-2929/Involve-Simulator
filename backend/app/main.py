@@ -23,56 +23,75 @@ def seed_data(session: Session):
     if session.exec(select(Platform)).first():
         return
 
-    # Platforms
+    # --- Real-World Platform Presets ---
     p1 = Platform(
-        name="SmartBalloon Mk1",
-        capex=15000.0,
-        launch_cost=5000.0,
+        name="Involve SmartBalloon (Standard)",
+        platform_type="Super-Pressure Variable Volume",
+        capex=30000.0,  # €30,000
+        launch_cost=2000.0,
+        consumables_cost=1833.0,  # Helium, etc.
         max_payload_mass=15.0,
         min_altitude=18.0,
-        max_altitude=25.0,
-        max_duration_days=100,
-        amortization_flights=3,
-        power_available_payload=150.0,
-        battery_capacity=2000.0 # Wh
+        max_altitude=23.0,
+        max_duration_days=60,
+        amortization_flights=5,
+        day_power=100.0,
+        night_power=40.0,
+        battery_capacity=1500.0  # Wh
     )
     p2 = Platform(
-        name="PseudoSat Alpha",
-        capex=45000.0,
-        launch_cost=12000.0,
-        max_payload_mass=25.0,
-        min_altitude=20.0,
-        max_altitude=30.0,
-        max_duration_days=180,
-        amortization_flights=5,
-        power_available_payload=300.0,
-        battery_capacity=5000.0 # Wh
+        name="Heavy-Lift Stratollite",
+        platform_type="Zero-Pressure with Ballast Control",
+        capex=120000.0,  # €120,000
+        launch_cost=8000.0,
+        consumables_cost=5000.0,
+        max_payload_mass=50.0,
+        min_altitude=18.0,
+        max_altitude=25.0,
+        max_duration_days=30,
+        amortization_flights=3,
+        day_power=250.0,
+        night_power=250.0,  # Continuous power
+        battery_capacity=8000.0  # Wh
     )
 
-    # Payloads
+    # --- Real-World Payload Presets ---
     pay1 = Payload(
-        name="Optical High-Res (EOS-1)",
-        capex=25000.0,
-        mass=5.0,
+        name="SAR Entry-Level (Involve Custom)",
+        capex=10000.0,
+        mass=4.5,
         power_consumption=45.0,
-        resolution_gsd=0.3,
-        fov=15.0,
-        daily_data_rate_gb=50.0
+        resolution_gsd=2.0,  # 1-3m
+        fov=20.0,
+        daily_data_rate_gb=30.0,
+        market="Maritime / Infrastructure"
     )
     pay2 = Payload(
-        name="SAR Radar (S-Band)",
-        capex=85000.0,
-        mass=12.0,
-        power_consumption=120.0,
+        name="Optical High-End (PhaseOne iXM-100)",
+        capex=45000.0,
+        mass=1.1,
+        power_consumption=16.0,
+        resolution_gsd=0.05,  # <5cm GSD
+        fov=45.0,
+        daily_data_rate_gb=80.0,
+        market="Urban Mapping / Precision Ag"
+    )
+    pay3 = Payload(
+        name="Hyperspectral (Headwall Nano HP)",
+        capex=35000.0,
+        mass=1.5,
+        power_consumption=20.0,
         resolution_gsd=1.0,
-        fov=25.0,
-        daily_data_rate_gb=120.0
+        fov=30.0,
+        daily_data_rate_gb=100.0,
+        market="Vegetation / Pollution Analysis"
     )
 
     session.add(p1)
     session.add(p2)
     session.add(pay1)
     session.add(pay2)
+    session.add(pay3)
     session.commit()
 
 @asynccontextmanager
@@ -119,6 +138,19 @@ def delete_platform(platform_id: int, session: Session = Depends(get_session)):
     session.commit()
     return {"ok": True}
 
+@app.put("/platforms/{platform_id}", response_model=Platform)
+def update_platform(platform_id: int, platform_data: PlatformBase, session: Session = Depends(get_session)):
+    platform = session.get(Platform, platform_id)
+    if not platform:
+        raise HTTPException(status_code=404, detail="Platform not found")
+    platform_dict = platform_data.model_dump(exclude_unset=True)
+    for key, value in platform_dict.items():
+        setattr(platform, key, value)
+    session.add(platform)
+    session.commit()
+    session.refresh(platform)
+    return platform
+
 # --- Payloads ---
 
 @app.post("/payloads/", response_model=Payload)
@@ -149,6 +181,19 @@ def delete_payload(payload_id: int, session: Session = Depends(get_session)):
     session.delete(payload)
     session.commit()
     return {"ok": True}
+
+@app.put("/payloads/{payload_id}", response_model=Payload)
+def update_payload(payload_id: int, payload_data: PayloadBase, session: Session = Depends(get_session)):
+    payload = session.get(Payload, payload_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="Payload not found")
+    payload_dict = payload_data.model_dump(exclude_unset=True)
+    for key, value in payload_dict.items():
+        setattr(payload, key, value)
+    session.add(payload)
+    session.commit()
+    session.refresh(payload)
+    return payload
 
 # --- Clients ---
 
@@ -214,35 +259,42 @@ def run_simulation(req: SimulationRequest, session: Session = Depends(get_sessio
         raise HTTPException(status_code=404, detail="Platform or Payload not found")
         
     warnings = []
+    is_feasible = True
     
-    # 2. Power Simulation
+    # 2. Power Simulation (using new night_power field)
     power_result = PowerModel.check_feasibility(
         lat=req.lat,
         month=req.month,
-        platform_power_bonus=platform.power_available_payload,
+        platform_night_power=platform.night_power,
         battery_capacity_wh=platform.battery_capacity,
         payload_power_w=payload.power_consumption
     )
     
-    if not power_result["survives_night"]:
-        warnings.append("Insufficient Battery for Night Operations")
+    if not power_result["is_feasible"]:
+        warnings.append(f"Critical Power Shortage: Duty Cycle {power_result['duty_cycle_percent']}%")
+        is_feasible = False
+    elif power_result["duty_cycle_percent"] < 100:
+        warnings.append(f"Reduced Duty Cycle: {power_result['duty_cycle_percent']}% operational at night")
         
     # Check Payload Weight vs Platform Capacity
     if payload.mass > platform.max_payload_mass:
         warnings.append(f"Payload Overweight: {payload.mass}kg > {platform.max_payload_mass}kg")
+        is_feasible = False
 
-    # 3. Flight Simulation
+    # 3. Flight Simulation (using platform_type for ACS selection)
     flight_result = FlightModel.simulate_station_keeping(
         lat=req.lat,
         month=req.month,
-        target_radius_km=req.target_radius_km
+        target_radius_km=req.target_radius_km,
+        platform_type=platform.platform_type
     )
     
-    if flight_result["drift_risk"] == "High":
-        warnings.append("High Drift Risk: Requires large fleet overprovisioning")
-
+    if flight_result["drift_warning"]:
+        warnings.append(f"Drift Warning: Wind ({flight_result['mean_wind_speed_kmh']} km/h) exceeds ACS capability ({flight_result['acs_correction_speed_kmh']} km/h)")
+    elif flight_result["drift_risk"] == "High":
+        warnings.append("High Drift Risk: Fleet overprovisioning recommended")
+    
     # 4. Economic Simulation
-    # Convert SQLModel objects to dicts for the engine
     quote_result = PricingEngine.calculate_quote(
         platform=platform.model_dump(),
         payload=payload.model_dump(),
@@ -252,7 +304,7 @@ def run_simulation(req: SimulationRequest, session: Session = Depends(get_sessio
     )
 
     return {
-        "is_feasible": len(warnings) == 0 or (len(warnings) == 1 and "Drift" in warnings[0]), # Allow drift warn, fail on power/mass
+        "is_feasible": is_feasible,
         "warnings": warnings,
         "power_analysis": power_result,
         "flight_analysis": flight_result,
