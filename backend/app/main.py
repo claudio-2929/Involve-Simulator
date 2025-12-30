@@ -546,3 +546,252 @@ def run_advanced_simulation(req: AdvancedSimulationRequest, session: Session = D
         "monte_carlo_risk": monte_carlo_risk,
         "quote": quote_result
     }
+
+
+# --- Analysis Endpoints for Sensitivity Analysis ---
+
+class SeasonalityRequest(BaseModel):
+    platform_id: int
+    payload_id: int
+    lat: float
+    lon: float
+    duration_days: int
+    target_radius_km: float
+    margin_percent: float = 0.30
+
+
+class SeasonalityDataPoint(BaseModel):
+    month: int
+    month_name: str
+    cost: float
+    is_feasible: bool
+    overprovisioning_factor: float
+    service_reliability: float
+    risk_level: str
+
+
+class SeasonalityResponse(BaseModel):
+    data: List[SeasonalityDataPoint]
+    best_month: int
+    worst_month: int
+    cost_variance_percent: float
+    recommendation: str
+
+
+@app.post("/analyze/seasonality", response_model=SeasonalityResponse)
+def analyze_seasonality(req: SeasonalityRequest, session: Session = Depends(get_session)):
+    """
+    Analyze mission cost and feasibility across all 12 months.
+    Answers: "How much do I save launching in June vs January?"
+    """
+    platform = session.get(Platform, req.platform_id)
+    payload = session.get(Payload, req.payload_id)
+    
+    if not platform or not payload:
+        raise HTTPException(status_code=404, detail="Platform or Payload not found")
+    
+    month_names = ["Gen", "Feb", "Mar", "Apr", "Mag", "Giu", 
+                   "Lug", "Ago", "Set", "Ott", "Nov", "Dic"]
+    
+    results = []
+    
+    for month in range(1, 13):
+        # Quick simulation for each month
+        flight_result = FlightModel.simulate_station_keeping(
+            lat=req.lat,
+            month=month,
+            target_radius_km=req.target_radius_km,
+            platform_type=platform.platform_type
+        )
+        
+        power_result = PowerModel.check_feasibility(
+            lat=req.lat,
+            month=month,
+            platform_night_power=platform.night_power,
+            battery_capacity_wh=platform.battery_capacity,
+            payload_power_w=payload.power_consumption
+        )
+        
+        quote = PricingEngine.calculate_quote(
+            platform=platform.model_dump(),
+            payload=payload.model_dump(),
+            mission_input={"duration": req.duration_days},
+            flight_result=flight_result,
+            margin_percent=req.margin_percent
+        )
+        
+        # Determine risk level from overprovisioning
+        overprov = flight_result["overprovisioning_factor"]
+        if overprov <= 1.2:
+            risk = "Low"
+        elif overprov <= 1.8:
+            risk = "Medium"
+        else:
+            risk = "High"
+        
+        is_feasible = power_result["is_feasible"] and not flight_result["drift_warning"]
+        
+        # Estimate service reliability from coverage probability
+        reliability = min(95, flight_result["station_keeping_prob"] * 100)
+        
+        results.append(SeasonalityDataPoint(
+            month=month,
+            month_name=month_names[month - 1],
+            cost=quote["price_quoted"],
+            is_feasible=is_feasible,
+            overprovisioning_factor=overprov,
+            service_reliability=round(reliability, 1),
+            risk_level=risk
+        ))
+    
+    # Find best/worst months
+    feasible_results = [r for r in results if r.is_feasible]
+    if feasible_results:
+        best = min(feasible_results, key=lambda x: x.cost)
+        worst = max(feasible_results, key=lambda x: x.cost)
+    else:
+        best = min(results, key=lambda x: x.cost)
+        worst = max(results, key=lambda x: x.cost)
+    
+    # Calculate variance
+    costs = [r.cost for r in results]
+    variance = ((max(costs) - min(costs)) / min(costs)) * 100 if min(costs) > 0 else 0
+    
+    # Generate recommendation
+    low_cost_months = [r.month_name for r in results if r.cost <= best.cost * 1.1]
+    high_cost_months = [r.month_name for r in results if r.cost >= worst.cost * 0.9]
+    
+    recommendation = f"Lancia tra {', '.join(low_cost_months[:3])} per risparmiare fino al {variance:.0f}%. Evita {', '.join(high_cost_months[:2])}."
+    
+    return SeasonalityResponse(
+        data=results,
+        best_month=best.month,
+        worst_month=worst.month,
+        cost_variance_percent=round(variance, 1),
+        recommendation=recommendation
+    )
+
+
+class GeographicRequest(BaseModel):
+    platform_id: int
+    payload_id: int
+    month: int
+    duration_days: int
+    target_radius_km: float
+    # Bounding box for analysis
+    lat_min: float = 30.0
+    lat_max: float = 60.0
+    lon_min: float = -10.0
+    lon_max: float = 30.0
+    grid_resolution: int = 5  # Points per axis
+
+
+class GeographicDataPoint(BaseModel):
+    lat: float
+    lon: float
+    feasibility_score: float  # 0-100
+    cost_factor: float  # Multiplier vs best case
+    limiting_factor: str  # "power", "drift", "none"
+
+
+class GeographicResponse(BaseModel):
+    data: List[GeographicDataPoint]
+    optimal_lat: float
+    optimal_lon: float
+    coverage_summary: str
+
+
+@app.post("/analyze/geographic", response_model=GeographicResponse)
+def analyze_geographic(req: GeographicRequest, session: Session = Depends(get_session)):
+    """
+    Generate feasibility heatmap across geographic region.
+    Answers: "Is it easier to monitor Sicily or Scotland?"
+    """
+    platform = session.get(Platform, req.platform_id)
+    payload = session.get(Payload, req.payload_id)
+    
+    if not platform or not payload:
+        raise HTTPException(status_code=404, detail="Platform or Payload not found")
+    
+    results = []
+    best_score = 0
+    optimal_location = (0, 0)
+    
+    lat_step = (req.lat_max - req.lat_min) / req.grid_resolution
+    lon_step = (req.lon_max - req.lon_min) / req.grid_resolution
+    
+    base_cost = None  # For cost factor calculation
+    
+    for i in range(req.grid_resolution + 1):
+        for j in range(req.grid_resolution + 1):
+            lat = req.lat_min + i * lat_step
+            lon = req.lon_min + j * lon_step
+            
+            # Quick feasibility check
+            flight_result = FlightModel.simulate_station_keeping(
+                lat=lat,
+                month=req.month,
+                target_radius_km=req.target_radius_km,
+                platform_type=platform.platform_type
+            )
+            
+            power_result = PowerModel.check_feasibility(
+                lat=lat,
+                month=req.month,
+                platform_night_power=platform.night_power,
+                battery_capacity_wh=platform.battery_capacity,
+                payload_power_w=payload.power_consumption
+            )
+            
+            quote = PricingEngine.calculate_quote(
+                platform=platform.model_dump(),
+                payload=payload.model_dump(),
+                mission_input={"duration": req.duration_days},
+                flight_result=flight_result,
+                margin_percent=0.25
+            )
+            
+            if base_cost is None:
+                base_cost = quote["price_quoted"]
+            
+            # Calculate feasibility score (0-100)
+            power_score = power_result["duty_cycle_percent"]
+            drift_score = flight_result["station_keeping_prob"] * 100
+            feasibility = (power_score + drift_score) / 2
+            
+            # Determine limiting factor
+            if power_score < drift_score:
+                limiting = "power"
+            elif drift_score < power_score * 0.8:
+                limiting = "drift"
+            else:
+                limiting = "none"
+            
+            # Cost factor
+            cost_factor = quote["price_quoted"] / base_cost if base_cost > 0 else 1
+            
+            results.append(GeographicDataPoint(
+                lat=round(lat, 2),
+                lon=round(lon, 2),
+                feasibility_score=round(feasibility, 1),
+                cost_factor=round(cost_factor, 2),
+                limiting_factor=limiting
+            ))
+            
+            if feasibility > best_score:
+                best_score = feasibility
+                optimal_location = (lat, lon)
+    
+    # Summary
+    power_limited = len([r for r in results if r.limiting_factor == "power"])
+    drift_limited = len([r for r in results if r.limiting_factor == "drift"])
+    total = len(results)
+    
+    summary = f"{power_limited}/{total} punti power-limited, {drift_limited}/{total} drift-limited. Location ottimale: {optimal_location[0]:.1f}°N, {optimal_location[1]:.1f}°E"
+    
+    return GeographicResponse(
+        data=results,
+        optimal_lat=optimal_location[0],
+        optimal_lon=optimal_location[1],
+        coverage_summary=summary
+    )
