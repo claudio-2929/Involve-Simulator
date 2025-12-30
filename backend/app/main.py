@@ -18,10 +18,68 @@ def get_session():
     with Session(engine) as session:
         yield session
 
+def seed_data(session: Session):
+    # Check if data exists
+    if session.exec(select(Platform)).first():
+        return
+
+    # Platforms
+    p1 = Platform(
+        name="SmartBalloon Mk1",
+        capex=15000.0,
+        launch_cost=5000.0,
+        max_payload_mass=15.0,
+        min_altitude=18.0,
+        max_altitude=25.0,
+        max_duration_days=100,
+        amortization_flights=3,
+        power_available_payload=150.0,
+        battery_capacity=2000.0 # Wh
+    )
+    p2 = Platform(
+        name="PseudoSat Alpha",
+        capex=45000.0,
+        launch_cost=12000.0,
+        max_payload_mass=25.0,
+        min_altitude=20.0,
+        max_altitude=30.0,
+        max_duration_days=180,
+        amortization_flights=5,
+        power_available_payload=300.0,
+        battery_capacity=5000.0 # Wh
+    )
+
+    # Payloads
+    pay1 = Payload(
+        name="Optical High-Res (EOS-1)",
+        capex=25000.0,
+        mass=5.0,
+        power_consumption=45.0,
+        resolution_gsd=0.3,
+        fov=15.0,
+        daily_data_rate_gb=50.0
+    )
+    pay2 = Payload(
+        name="SAR Radar (S-Band)",
+        capex=85000.0,
+        mass=12.0,
+        power_consumption=120.0,
+        resolution_gsd=1.0,
+        fov=25.0,
+        daily_data_rate_gb=120.0
+    )
+
+    session.add(p1)
+    session.add(p2)
+    session.add(pay1)
+    session.add(pay2)
+    session.commit()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     create_db_and_tables()
-    # Seed data if empty could go here
+    with Session(engine) as session:
+        seed_data(session)
     yield
 
 app = FastAPI(lifespan=lifespan, title="Involve Stratospheric Simulator API")
@@ -122,65 +180,6 @@ def read_missions(offset: int = 0, limit: int = Query(default=100, le=100), sess
     missions = session.exec(select(MissionPreset).offset(offset).limit(limit)).all()
     return missions
 
-# --- Data Seeding ---
-
-def seed_data(session: Session):
-    # Check if data exists
-    if session.exec(select(Platform)).first():
-        return
-
-    # Platforms
-    p1 = Platform(
-        name="SmartBalloon Mk1",
-        capex=15000.0,
-        launch_cost=5000.0,
-        max_payload_mass=15.0,
-        min_altitude=18.0,
-        max_altitude=25.0,
-        max_duration_days=100,
-        amortization_flights=3,
-        power_available_payload=150.0,
-        battery_capacity=2000.0 # Wh
-    )
-    p2 = Platform(
-        name="PseudoSat Alpha",
-        capex=45000.0,
-        launch_cost=12000.0,
-        max_payload_mass=25.0,
-        min_altitude=20.0,
-        max_altitude=30.0,
-        max_duration_days=180,
-        amortization_flights=5,
-        power_available_payload=300.0,
-        battery_capacity=5000.0 # Wh
-    )
-
-    # Payloads
-    pay1 = Payload(
-        name="Optical High-Res (EOS-1)",
-        capex=25000.0,
-        mass=5.0,
-        power_consumption=45.0,
-        resolution_gsd=0.3,
-        fov=15.0,
-        daily_data_rate_gb=50.0
-    )
-    pay2 = Payload(
-        name="SAR Radar (S-Band)",
-        capex=85000.0,
-        mass=12.0,
-        power_consumption=120.0,
-        resolution_gsd=1.0,
-        fov=25.0,
-        daily_data_rate_gb=120.0
-    )
-
-    session.add(p1)
-    session.add(p2)
-    session.add(pay1)
-    session.add(pay2)
-    session.commit()
-
 # --- Simulation & Quoting Logic ---
 
 from pydantic import BaseModel
@@ -259,10 +258,3 @@ def run_simulation(req: SimulationRequest, session: Session = Depends(get_sessio
         "flight_analysis": flight_result,
         "quote": quote_result
     }
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    create_db_and_tables()
-    with Session(engine) as session:
-        seed_data(session)
-    yield
