@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+sqlmodel
+pydantic
+numpy
+python-multipart
+# For eventual async request if needed (e.g. tests)
+httpx
+pytest
